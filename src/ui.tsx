@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, useEffect, useId, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import type { Scenario } from './model.ts'
 
 export const brl = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format
@@ -7,14 +7,56 @@ export const pct = (n: number | null) => n === null ? '—' : decimal(n) + '%'
 export const dateLabel = (date: string | null) => date ? date.split('-').reverse().join('/') : '—'
 export type Edit = <K extends keyof Scenario>(key: K, value: Scenario[K]) => void
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>
+export function Field({ label, children, hint }: {
+  label: string; children: ReactElement<{ id?: string; 'aria-describedby'?: string }>; hint?: string;
+}) {
+  const id = useId()
+  const [help, setHelp] = useState<'hover' | 'open' | null>(null)
+  return <div className="field">
+    <div className="field-heading">
+      <label htmlFor={id}>{label}</label>
+      {hint && <span className="field-help"
+        onPointerEnter={e => { if (e.pointerType === 'mouse') setHelp(old => old ?? 'hover') }}
+        onPointerLeave={() => setHelp(old => old === 'hover' ? null : old)}
+        onKeyDown={e => { if (e.key === 'Escape') setHelp(null) }}>
+        <button type="button" aria-label={'Ajuda: ' + label} aria-expanded={help !== null}
+          aria-controls={id + '-help'} onClick={() => setHelp(old => old === 'open' ? null : 'open')}
+          onBlur={() => setHelp(null)}>?</button>
+        <small id={id + '-help'} className="field-tooltip" hidden={!help}>{hint}</small>
+      </span>}
+    </div>
+    {cloneElement(children, { id, 'aria-describedby': hint ? id + '-help' : undefined })}
+  </div>
+}
+
+function parseMoney(raw: string) {
+  const value = raw.replace(/R\$/gi, '').replace(/\s/g, '')
+  if (!value) return null
+  const localized = /^-?(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{0,2})?$/
+  if (localized.test(value)) return Number(value.replace(/\./g, '').replace(',', '.'))
+  return /^-?\d+\.\d{0,2}$/.test(value) ? Number(value) : NaN
 }
 export function Numeric({ label, value, onChange, optional, hint, min = 0, max, step = 'any' }: {
   label: string; value: number | null; onChange: (n: number | null) => void;
   optional?: boolean; hint?: string; min?: number; max?: number; step?: string | number;
 }) {
   const [draft, setDraft] = useState<string | null>(null)
+  const money = label.endsWith(' (R$)')
+  if (money) return <Field label={label.slice(0, -5)} hint={hint}>
+    <input type="text" inputMode="decimal" value={draft ?? (value !== null && Number.isFinite(value) ? brl(value) : '')}
+      placeholder={optional ? 'Pendente' : 'R$ 0,00'} aria-invalid={value !== null && !Number.isFinite(value)}
+      onFocus={e => {
+        setDraft(old => old ?? (value !== null && Number.isFinite(value) ? String(value).replace('.', ',') : ''))
+        const input = e.currentTarget
+        requestAnimationFrame(() => { if (document.activeElement === input) input.select() })
+      }}
+      onBlur={() => { if (value === null || Number.isFinite(value)) setDraft(null) }}
+      onChange={e => {
+        const raw = e.currentTarget.value
+        setDraft(raw)
+        onChange(parseMoney(raw) ?? (optional ? null : NaN))
+      }} />
+  </Field>
   return <Field label={label} hint={hint}>
     <input type="number" min={min} max={max} step={step} value={draft ?? value ?? ''} placeholder={optional ? 'Pendente' : undefined}
       onBlur={() => setDraft(null)} onChange={e => {
@@ -24,10 +66,10 @@ export function Numeric({ label, value, onChange, optional, hint, min = 0, max, 
       }} />
   </Field>
 }
-export function DateField({ label, value, onChange, type = 'date' }: {
-  label: string; value: string; onChange: (s: string) => void; type?: 'date' | 'month'
+export function DateField({ label, value, onChange, hint, type = 'date' }: {
+  label: string; value: string; onChange: (s: string) => void; hint?: string; type?: 'date' | 'month'
 }) {
-  return <Field label={label}><input type={type} value={value} onChange={e => onChange(e.target.value)} /></Field>
+  return <Field label={label} hint={hint}><input type={type} value={value} onChange={e => onChange(e.target.value)} /></Field>
 }
 export function Section({ title, children, subtitle }: { title: string; children: ReactNode; subtitle?: string }) {
   return <section className="panel"><h2>{title}</h2>{subtitle && <p className="muted">{subtitle}</p>}{children}</section>

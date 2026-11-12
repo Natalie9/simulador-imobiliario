@@ -63,6 +63,9 @@ h1 { font-size: clamp(2rem, 4.4vw, 3.1rem); line-height: 1.1; letter-spacing: -.
 .fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .85rem; }
 .field { display: flex; min-width: 0; flex-direction: column; gap: .33rem; color: #334c40; font-size: .83rem; font-weight: 650; }
 .field small { color: var(--muted); font-weight: 450; }
+.field-heading { position: relative; display: flex; align-items: center; gap: .4rem; }
+.field-help button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 1px solid #cddbd2; border-radius: 50%; background: #edf5ef; color: var(--green); font-size: .75rem; font-weight: 750; }
+.field-help .field-tooltip { position: absolute; z-index: 2; inset: calc(100% + 4px) 0 auto; padding: .65rem .75rem; border: 1px solid var(--border); border-radius: 8px; background: white; color: #203b30; box-shadow: 0 4px 16px #203b3026; font-size: .8rem; line-height: 1.45; }
 .field input, .field select { padding: .55rem .62rem; width: 100%; min-width: 0; min-height: 42px; border-radius: 8px; color: #203b30; border: 1px solid #cddbd2; background: #fcfdfa; }
 .list { display: grid; gap: .75rem; margin: .75rem 0; }
 .list-row { display: grid; gap: .65rem; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr) auto; }
