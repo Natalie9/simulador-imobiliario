@@ -1,19 +1,21 @@
-# Simulador imobiliário na Vercel
+# Simulador imobiliário
 
-Esta edição inclui a aba **Gastos mensais** e três cenários fictícios editáveis.
+Uma tela só: preencha o imóvel, o financiamento, o empréstimo para completar a entrada, o orçamento da família e o FGTS. O resultado mostra a sobra mensal, as parcelas, quando cada dívida é quitada e quanto custa manter a reserva.
 
-## Publicar pelo GitHub
+O último preenchimento fica salvo no navegador. O botão **Voltar ao exemplo** restaura os valores fictícios.
 
-1. Extraia o ZIP e coloque os arquivos extraídos na raiz de um novo repositório GitHub. Inclua `.gitignore`, `package-lock.json` e `vercel.json`.
-2. Na Vercel, abra **Add New → Project** e importe o repositório. A raiz do projeto deve conter o `package.json`.
-3. Confira o preset **Vite** e o Node.js **24.x**. O arquivo `vercel.json` configura a instalação com `npm ci`, o build com `npm run build` e a pasta de saída `dist`.
-4. Clique em **Deploy** e abra a URL gerada. As alterações na branch de produção geram novos deploys.
+## O que o cálculo considera
 
-Para restringir o acesso ao link, configure **Settings → Deployment Protection → All Deployments** com **Vercel Authentication**. [Documentação da Vercel](https://vercel.com/changelog/protect-production-deployments-for-free-on-every-plan)
+- O empréstimo cobre o que falta para a compra mais a reserva, com o IOF embutido.
+- Toda sobra do mês quita o empréstimo. Depois, a sobra e a parcela liberada vão para o financiamento.
+- O FGTS abate primeiro a dívida mais cara.
+- Não entram TR, seguros (MIP/DFI) e tarifas. Use a proposta do banco para conferir a parcela.
 
-## Transferir cenários
+O motor completo (`src/engine.ts`) ainda suporta datas, TR, encargos, IOF cotado e teste de estresse. A tela simples (`src/simple.ts`) preenche esses campos com valores fixos.
 
-Exporte o backup JSON na versão local e importe pelo botão de restauração no site publicado. Guarde o backup fora do repositório. Cada navegador mantém sua própria cópia dos cenários.
+## Publicar na Vercel
+
+Importe o repositório em **Add New → Project**, confira o preset **Vite** e o Node.js **24.x** e clique em **Deploy**. O `vercel.json` já configura `npm ci`, `npm run build` e a pasta `dist`.
 
 ## Testar localmente
 
