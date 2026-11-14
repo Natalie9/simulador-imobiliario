@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { closing, monteCarlo, noReserve, prepare, simulate } from './engine.ts'
 import { cent, examples, payment } from './model.ts'
-import { parseBackup } from './storage.ts'
+import { calculate, check, defaults, toScenario } from './simple.ts'
 
 const sample = () => structuredClone(examples[0])
 
@@ -106,10 +106,26 @@ test('faixa de TR e atrasos usam sorteio reproduzível', () => {
   assert.ok(a.shortfalls > 0 && a.shortfalls <= 1000)
 })
 
-test('backup exige versão e dados completos', () => {
-  const s = sample()
-  assert.deepEqual(parseBackup(JSON.stringify({ version: 1, scenarios: [s] })), [s])
-  assert.throws(() => parseBackup(JSON.stringify({ version: 2, scenarios: [s] })))
-  assert.throws(() => parseBackup(JSON.stringify({ version: 1, scenarios: [{ ...s, price: -1 }] })))
+test('tela simples reproduz o exemplo completo sem encargos nem cotação', () => {
+  assert.deepEqual(check(defaults), [])
+  const { terms, run, housingMonth } = calculate(defaults)
+  assert.equal(terms.close.initial, 86600)
+  assert.equal(terms.close.principal, 31095.04)
+  assert.equal(terms.close.reserve, 9500)
+  assert.equal(terms.close.peakGap, 0)
+  assert.equal(terms.firstHouse, cent(payment(288000, Math.expm1(Math.log1p(.115) / 12), 360)))
+  assert.ok(run.bridgeMonth > 0 && run.bridgeMonth < 36)
+  assert.ok(housingMonth !== null && housingMonth < 360)
+  assert.equal(run.rows[19].events, 6000)
+})
+
+test('tela simples sem FGTS, sem empréstimo e com campos inválidos', () => {
+  assert.deepEqual(toScenario({ ...defaults, fgts: 0 }).events, [])
+  const rich = calculate({ ...defaults, capital: 200000 })
+  assert.equal(rich.terms.close.principal, 0)
+  assert.equal(rich.run.reserveCost, 0)
+  assert.ok(check({ ...defaults, mortgage: 400000 }).length > 0)
+  assert.ok(check({ ...defaults, term: 12.5 }).length > 0)
+  assert.ok(check({ ...defaults, spend: NaN }).length > 0)
 })
 

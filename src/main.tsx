@@ -1,211 +1,184 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { prepare, simulate } from './engine.ts'
-import { Budget, Purchase, Stress } from './forms.tsx'
-import { MonthlyExpenses } from './monthly.tsx'
-import { examples, validation, type Scenario } from './model.ts'
-import { Alerts, csv, Overview, Results } from './results.tsx'
-import { download, parseBackup, readScenarios, saveScenarios, shapeErrors } from './storage.ts'
-import { brl, dateLabel, Field, Section, type Edit } from './ui.tsx'
+import { calculate, check, defaults, type Inputs } from './simple.ts'
+import { brl, Chart, Field, Metric, Numeric } from './ui.tsx'
 import './style.css'
 
-const tabs = ['Compra e propostas', 'Orçamento e reserva', 'Gastos mensais', 'Estresse', 'Resultados'] as const
-const issues = (s: Scenario) => {
-  const shape = shapeErrors(s)
-  return shape.length ? shape : validation(s)
+const KEY = 'simulador-simples-v1'
+
+function load(): Inputs {
+  try {
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? 'null')
+    if (!saved || typeof saved !== 'object') return defaults
+    const merged = { ...defaults }
+    for (const key of Object.keys(defaults) as (keyof Inputs)[]) {
+      const value = saved[key]
+      if (key === 'mode') { if (value === 'Price' || value === 'SAC') merged.mode = value }
+      else if (typeof value === 'number') merged[key] = value
+    }
+    return merged
+  } catch {
+    return defaults
+  }
+}
+
+const span = (months: number) => {
+  const years = Math.floor(months / 12)
+  const rest = months % 12
+  return [years && years + (years > 1 ? ' anos' : ' ano'), rest && rest + (rest > 1 ? ' meses' : ' mês')].filter(Boolean).join(' e ') || '0 meses'
+}
+
+const help: Partial<Record<keyof Inputs, string>> = {
+  price: 'Preço combinado com o vendedor.',
+  mortgage: 'Parte do preço que o banco financia. O restante é a entrada.',
+  capital: 'Dinheiro que você já tem para a entrada e as despesas.',
+  costs: 'Soma de ITBI, registro, avaliação bancária, mudança e pequenas reformas.',
+  annual: 'Taxa efetiva anual da proposta do banco.',
+  term: 'Prazo do financiamento em meses (ex.: 360 = 30 anos).',
+  bridgeRate: 'Juros mensais do empréstimo pessoal usado para completar a entrada.',
+  bridgeTerm: 'Número de parcelas do empréstimo pessoal.',
+  iof: 'Imposto cobrado na contratação do empréstimo. Fica embutido no valor emprestado.',
+  income: 'Tudo o que entra por mês na casa.',
+  spend: 'Gastos da casa sem as parcelas: mercado, contas, transporte, escola.',
+  reserve: 'Valor extra pego no empréstimo para deixar guardado para imprevistos.',
+  cdi: 'Quanto a reserva rende por mês, já descontado o imposto.',
+  fgts: 'Valor do FGTS que você poderá usar para abater dívida. Deixe zero se não houver.',
+  fgtsMonth: 'Em que mês depois da compra o FGTS fica disponível.',
+}
+
+function Group({ title, children }: { title: string; children: ReactNode }) {
+  return <fieldset className="group"><legend>{title}</legend><div className="fields">{children}</div></fieldset>
 }
 
 function App() {
-  const [saved, setSaved] = useState(examples)
-  const [drafts, setDrafts] = useState<Record<string, Scenario>>({})
-  const [id, setId] = useState(examples[0].id)
-  const [tab, setTab] = useState<typeof tabs[number]>('Resultados')
-  const [status, setStatus] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  const [compare, setCompare] = useState<string[]>([])
-  const [mc, setMc] = useState<{ shortfalls: number; exhaustion: number } | null>(null)
-  const [working, setWorking] = useState(false)
-  const worker = useRef<Worker | null>(null)
-  const file = useRef<HTMLInputElement>(null)
-  const s = drafts[id] ?? saved.find(x => x.id === id) ?? examples[0]
-  useEffect(() => {
-    readScenarios().then(items => setSaved([...examples.map(x => items.find(item => item.id === x.id) ?? x),
-      ...items.filter(item => !examples.some(x => x.id === item.id))]))
-      .catch(() => setStatus('O armazenamento local está indisponível. Use o backup JSON para guardar os cenários.'))
-      .finally(() => setLoading(false))
-  }, [])
-  useEffect(() => () => { worker.current?.terminate() }, [])
-  const errors = useMemo(() => issues(s), [s])
-  const model = useMemo(() => {
-    if (errors.length) return null
-    const terms = prepare(s)
-    return { terms, run: simulate(s, terms) }
-  }, [s, errors])
-  const comparable = useMemo(() => saved.filter(x => compare.includes(x.id) && x.id !== id).flatMap(x => {
-    const scenario = drafts[x.id] ?? x
-    if (issues(scenario).length) return []
-    const terms = prepare(scenario)
-    return [{ scenario, terms, run: simulate(scenario, terms, scenario.stress.delay, scenario.tr, true) }]
-  }), [saved, drafts, compare, id])
-  const resetStress = () => {
-    worker.current?.terminate()
-    worker.current = null
-    setWorking(false)
-    setMc(null)
-  }
-  const edit: Edit = (key, value) => {
-    setDrafts(old => ({ ...old, [id]: { ...(old[id] ?? s), [key]: value } }))
-    setStatus('')
-    resetStress()
-  }
-  const select = (key: string) => {
-    setId(key)
-    setStatus('')
-    resetStress()
-  }
-  const write = async (duplicate: boolean) => {
-    if (errors.length || busy) return
-    const next = duplicate ? { ...structuredClone(s), id: crypto.randomUUID(), name: (s.name.slice(0, 111) + ' · cópia') } : s
-    setBusy(true)
-    try {
-      await saveScenarios([next])
-      setSaved(old => duplicate ? [...old, next] : old.map(item => item.id === next.id ? next : item))
-      if (!duplicate) setDrafts(old => {
-        if (old[id] !== s) return old
-        const copy = { ...old }
-        delete copy[id]
-        return copy
-      })
-      if (duplicate) select(next.id)
-      setStatus(duplicate ? 'Cópia criada e salva.' : 'Cenário salvo neste navegador.')
-    } catch {
-      setStatus('Falha ao salvar. As alterações desta sessão podem ser exportadas em JSON.')
-    } finally {
-      setBusy(false)
-    }
-  }
-  const backup = () => {
-    const items = saved.map(x => drafts[x.id] ?? x)
-    const invalid = items.find(x => issues(x).length)
-    if (invalid) {
-      setStatus('Corrija os campos do cenário “' + invalid.name + '” antes de exportar o backup.')
-      return
-    }
-    download('cenarios-imobiliarios.json', JSON.stringify({ version: 1, scenarios: items }, null, 2), 'application/json')
-    setStatus('Backup JSON exportado.')
-  }
-  const importFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = event.target.files?.[0]
-    event.target.value = ''
-    if (!selected) return
-    setBusy(true)
-    try {
-      if (selected.size > 8 * 1024 * 1024) throw new Error('O arquivo excede 8 MB.')
-      const imported = parseBackup(await selected.text())
-      if (imported.some(x => issues(x).length)) throw new Error('O backup contém cenários com premissas inválidas.')
-      const copies = imported.map(x => ({ ...x, id: crypto.randomUUID() }))
-      await saveScenarios(copies)
-      setSaved(old => [...old, ...copies])
-      select(copies[0].id)
-      setStatus(copies.length + ' cenário(s) restaurado(s) como cópias.')
-    } catch (error) {
-      setStatus(error instanceof SyntaxError ? 'O arquivo selecionado não contém JSON válido.' : error instanceof Error ? error.message : 'Falha ao restaurar o backup.')
-    } finally {
-      setBusy(false)
-    }
-  }
-  const runStress = () => {
-    if (!model || working) return
-    resetStress()
-    const next = new Worker(new URL('./stress.worker.ts', import.meta.url), { type: 'module' })
-    worker.current = next
-    setWorking(true)
-    next.onmessage = event => {
-      setMc(event.data)
-      setWorking(false)
-      next.terminate()
-      worker.current = null
-    }
-    next.onerror = () => {
-      setWorking(false)
-      setStatus('Não foi possível executar as simulações.')
-      next.terminate()
-      worker.current = null
-    }
-    next.postMessage(s)
-  }
+  const [inputs, setInputs] = useState(load)
+  useEffect(() => { try { localStorage.setItem(KEY, JSON.stringify(inputs)) } catch { /* sem armazenamento: segue sem salvar */ } }, [inputs])
+  const errors = useMemo(() => check(inputs), [inputs])
+  const result = useMemo(() => errors.length ? null : calculate(inputs), [inputs, errors])
+  const n = (key: Exclude<keyof Inputs, 'mode'>, label: string, extra: { step?: number; max?: number } = {}) =>
+    <Numeric label={label} value={inputs[key]} hint={help[key]} {...extra}
+      onChange={value => setInputs(old => ({ ...old, [key]: value ?? NaN }))} />
+
   return <>
     <header className="topbar"><div className="shell top-content">
-      <div className="brand"><span className="brand-icon" aria-hidden="true">⌂</span><span>Viabilidade imobiliária</span></div>
-      <div className="toolbar">
-        <span className="local"><i /> Uso local</span>
-        <button className="subtle" onClick={backup} disabled={loading}>Exportar backup</button>
-        <button className="subtle" onClick={() => file.current?.click()} disabled={loading || busy}>Restaurar backup</button>
-        <input hidden type="file" accept=".json,application/json" ref={file} onChange={importFile} />
-      </div>
+      <div className="brand"><span className="brand-icon" aria-hidden="true">⌂</span><span>Simulador imobiliário</span></div>
+      <button className="subtle" onClick={() => setInputs(defaults)}>Voltar ao exemplo</button>
     </div></header>
-    <main className="shell">
-      <div className="intro">
-        <div><p className="kicker">Compra, crédito e reserva</p><h1>Planejamento da compra</h1>
-          <p>Simule o fechamento, o orçamento familiar e a quitação das dívidas.</p></div>
-        <div className="scenario-control">
-          <Field label="Cenário ativo"><select value={id} onChange={e => select(e.target.value)}>{saved.map(x =>
-            <option value={x.id} key={x.id}>{(drafts[x.id] ?? x).name || 'Sem nome'}{drafts[x.id] ? ' *' : ''}</option>)}</select></Field>
-          <div className="toolbar"><button className="subtle" disabled={loading || busy || !!errors.length} onClick={() => void write(true)}>Duplicar</button>
-            <button className="primary" disabled={loading || busy || !!errors.length} onClick={() => void write(false)}>Salvar cenário</button></div>
-        </div>
-      </div>
-      <div className="status" role="status">{status || (drafts[id] ? 'Alterações ainda não salvas.' : '')}</div>
-      <nav className="tabs" aria-label="Seções do simulador">
-        {tabs.map(t => <button key={t} aria-current={t === tab ? 'page' : undefined} onClick={() => setTab(t)}>{t}</button>)}
-      </nav>
-      <div className="print-title"><h2>{s.name}</h2><p>Resumo da simulação imobiliária</p></div>
-      {errors.length > 0 && <div className="notice alert" role="alert"><strong>Revise os campos para recalcular</strong><ul>{errors.map((message, index) => <li key={index}>{message}</li>)}</ul></div>}
-      {tab === 'Compra e propostas' && <>
-        <Section title="Identificação do cenário"><div className="fields"><Field label="Nome do cenário">
-          <input maxLength={120} value={s.name} onChange={e => edit('name', e.target.value)} />
-        </Field></div></Section>
-        <Purchase key={id} s={s} edit={edit} close={model?.terms.close ?? null} />
-      </>}
-      {tab === 'Orçamento e reserva' && <Budget key={id} s={s} edit={edit} />}
-      {tab === 'Gastos mensais' && model && <MonthlyExpenses key={id} rows={model.run.rows} />}
-      {tab === 'Estresse' && <>
-        <Stress key={id} s={s} edit={edit} onRun={runStress} pending={working || !model} result={mc} />
-        {model && <><Overview s={s} {...model} /><Alerts s={s} {...model} /></>}
-      </>}
-      {tab === 'Resultados' && model && <>
-        <div className="result-head"><div><h2>{s.name}</h2><p>Projeção a partir de {dateLabel(model.run.rows[0]?.month ?? null)}</p></div>
-          <div className="toolbar"><button className="subtle" onClick={() => download('fluxo-mensal.csv', csv(model.run.rows), 'text/csv;charset=utf-8')}>Exportar CSV</button>
-            <button className="subtle" onClick={() => window.print()}>Imprimir resumo</button></div></div>
-        <Overview s={s} {...model} />
-        <Alerts s={s} {...model} />
-        <Results key={id} s={s} {...model} />
-        <Section title="Comparar cenários" subtitle="Selecione até três cenários adicionais. A tabela inclui as alterações da sessão.">
-          <div className="compare-options">{saved.filter(x => x.id !== id).map(x =>
-            <label key={x.id}><input type="checkbox" checked={compare.includes(x.id)}
-              disabled={!compare.includes(x.id) && compare.filter(v => v !== id).length >= 3}
-              onChange={e => setCompare(old => e.target.checked ? [...old.filter(v => v !== id), x.id] : old.filter(v => v !== x.id))} />
-              {(drafts[x.id] ?? x).name}{issues(drafts[x.id] ?? x).length ? ' · premissas inválidas' : ''}</label>)}</div>
-          {!!comparable.length && <div className="scroll"><table><thead><tr><th>Indicador</th>{[s, ...comparable.map(x => x.scenario)].map(x => <th key={x.id}>{x.name}</th>)}</tr></thead>
-            <tbody>{[
-              ['Desembolso inicial', ({ terms }: typeof model) => brl(terms.close.initial)],
-              ['Pico de falta no fechamento', ({ terms }: typeof model) => brl(terms.close.peakGap)],
-              ['Primeira prestação imobiliária', ({ terms }: typeof model) => brl(terms.firstHouse)],
-              ['Sobra inicial', ({ run }: typeof model) => brl(run.firstSurplus)],
-              ['Quitação complementar', ({ run, terms }: typeof model) => terms.close.principal ? dateLabel(run.bridgePaidOff) : 'Sem dívida'],
-              ['Quitação imobiliária', ({ run }: typeof model) => dateLabel(run.housingPaidOff)],
-              ['Custo líquido da reserva', ({ run }: typeof model) => brl(run.reserveCost)],
-              ['Menor saldo de caixa e reserva', ({ run }: typeof model) => brl(run.minCash)],
-              ['Pico de falta de caixa mensal', ({ run }: typeof model) => brl(run.peakGap)],
-            ].map(([label, format]) => <tr key={String(label)}><th scope="row">{String(label)}</th>
-              {[model, ...comparable].map((entry, i) => <td key={i}>{typeof format === 'function' && format(entry)}</td>)}</tr>)}</tbody></table></div>}
-        </Section>
-      </>}
-      <footer>Os cenários de exemplo usam dados fictícios.</footer>
+    <main className="shell layout">
+      <form className="inputs" onSubmit={e => e.preventDefault()}>
+        <Group title="Imóvel">
+          {n('price', 'Preço do imóvel (R$)')}
+          {n('mortgage', 'Valor financiado (R$)')}
+          {n('capital', 'Dinheiro disponível (R$)')}
+          {n('costs', 'Despesas da compra (R$)')}
+        </Group>
+        <Group title="Financiamento">
+          <Field label="Tabela" hint="Price: parcela fixa. SAC: começa mais alta e diminui todo mês.">
+            <select value={inputs.mode} onChange={e => setInputs(old => ({ ...old, mode: e.target.value as Inputs['mode'] }))}>
+              <option>Price</option><option>SAC</option>
+            </select>
+          </Field>
+          {n('annual', 'Juros ao ano (%)')}
+          {n('term', 'Prazo (meses)', { step: 1, max: 600 })}
+        </Group>
+        <Group title="Empréstimo para completar">
+          {n('bridgeRate', 'Juros ao mês (%)')}
+          {n('bridgeTerm', 'Prazo (meses)', { step: 1, max: 600 })}
+          {n('iof', 'IOF (%)', { max: 99 })}
+        </Group>
+        <Group title="Orçamento da família">
+          {n('income', 'Renda mensal (R$)')}
+          {n('spend', 'Gastos da casa (R$)')}
+          {n('reserve', 'Reserva para imprevistos (R$)')}
+          {n('cdi', 'Rendimento da reserva ao mês (%)')}
+        </Group>
+        <Group title="FGTS">
+          {n('fgts', 'Valor do FGTS (R$)')}
+          {n('fgtsMonth', 'Disponível no mês', { step: 1, max: 600 })}
+        </Group>
+      </form>
+
+      <section className="results" aria-live="polite">
+        {errors.length > 0 && <div className="notice alert" role="alert"><strong>Revise os campos</strong>
+          <ul>{errors.map(e => <li key={e}>{e}</li>)}</ul></div>}
+        {result && <Results inputs={inputs} result={result} />}
+      </section>
     </main>
   </>
 }
 
-createRoot(document.getElementById('root')!).render(<App />)
+function Results({ inputs, result }: { inputs: Inputs; result: ReturnType<typeof calculate> }) {
+  const { terms, run, housingMonth } = result
+  const { close } = terms
+  const hasLoan = close.principal > 0
+  const surplus = run.firstSurplus
+  const limit = inputs.income * .3
+  const monthOf = (date: string | null) => run.rows.findIndex(r => r.month === date) + 1
+  // Quando falta dinheiro para as parcelas, a projeção deixa de ser um plano viável: mostramos só o limite de gastos.
+  const broken = run.firstShortfall !== null
+  const maxSpend = Math.max(0, inputs.income - terms.firstHouse - terms.bridgeRegular)
+  const notes = [
+    !broken && surplus < 0 && 'Os gastos e as parcelas passam da renda em ' + brl(-surplus) + ' por mês. A diferença sai da reserva.',
+    terms.firstHouse > limit && 'A parcela do imóvel (' + brl(terms.firstHouse) + ') passa de 30% da renda (' + brl(limit) + '). Os bancos costumam limitar a esse valor.',
+  ].filter(Boolean) as string[]
+  const rows = useMemo(() => housingMonth ? run.rows.slice(0, housingMonth) : run.rows, [run, housingMonth])
+  const series = useMemo(() => [
+    { name: 'Saldo do financiamento', values: rows.map(r => r.housing), color: '#087b64' },
+    ...(hasLoan ? [{ name: 'Saldo do empréstimo', values: rows.map(r => r.bridge), color: '#ac6027' }] : []),
+  ], [rows, hasLoan])
+  const labels = useMemo(() => rows.map((_, i) => 'Mês ' + (i + 1)), [rows])
 
+  return <>
+    <div className="overview">
+      <Metric label="Sobra por mês" value={brl(surplus)} tone={surplus < 0 ? 'warning' : ''}
+        detail={surplus < 0 ? 'Renda não cobre as despesas' : 'Vai toda para quitar as dívidas mais cedo'} />
+      <Metric label="Parcela do imóvel" value={brl(terms.firstHouse)}
+        detail={inputs.mode === 'Price' ? 'Fixa' : 'Primeira parcela; depois diminui'} />
+      <Metric label="Empréstimo para completar" value={hasLoan ? brl(close.principal) : 'Não precisa'}
+        detail={hasLoan ? brl(terms.bridgeRegular) + '/mês em ' + inputs.bridgeTerm + ' parcelas' : 'O dinheiro disponível cobre tudo'} />
+      <Metric label="Empréstimo quitado em" value={broken || !hasLoan || !run.bridgeMonth ? '—' : span(run.bridgeMonth)}
+        detail={!broken && hasLoan ? 'Prazo do contrato: ' + span(inputs.bridgeTerm) : undefined} />
+      <Metric label="Imóvel quitado em" value={broken || !housingMonth ? '—' : span(housingMonth)}
+        detail={!broken && housingMonth && housingMonth < inputs.term ? span(inputs.term - housingMonth) + ' antes do prazo' : 'Prazo do contrato: ' + span(inputs.term)} />
+      <Metric label="Custo da reserva" value={broken ? '—' : brl(run.reserveCost)}
+        detail="Juros e IOF da reserva menos o que ela rende" />
+    </div>
+
+    {broken && <div className="notice alert" role="alert"><strong>O orçamento não fecha</strong>
+      <p>A partir do mês {monthOf(run.firstShortfall)}{run.firstExhausted ? ', depois de a reserva acabar,' : ''} falta dinheiro para pagar as parcelas.
+        Para o plano funcionar, os gastos da casa precisam ficar abaixo de <strong>{brl(maxSpend)}</strong> por mês, ou a renda precisa aumentar.</p></div>}
+
+    {notes.length > 0 && <div className="notice alert"><strong>Pontos de atenção</strong><ul>{notes.map(x => <li key={x}>{x}</li>)}</ul></div>}
+
+    {!broken && <div className="panel">
+      <h2>Quanto falta pagar ao longo do tempo</h2>
+      <Chart title="Saldo das dívidas" labels={labels} series={series} />
+    </div>}
+
+    <div className="panel">
+      <h2>Resumo da compra</h2>
+      <dl className="stats">
+        <dt>Entrada</dt><dd>{brl(close.down)}</dd>
+        <dt>Despesas da compra</dt><dd>{brl(close.costs)}</dd>
+        <dt>Total a pagar na compra</dt><dd>{brl(close.initial)}</dd>
+        <dt>Dinheiro disponível</dt><dd>{brl(inputs.capital)}</dd>
+        <dt>Falta para fechar a compra</dt><dd>{brl(close.deficit)}</dd>
+        <dt>Reserva guardada após a compra</dt><dd>{brl(close.reserve)}</dd>
+        {hasLoan && <dt>IOF do empréstimo</dt>}{hasLoan && <dd>{brl(close.iof)}</dd>}
+        {!broken && <>
+          {hasLoan && <><dt>Juros pagos no empréstimo</dt><dd>{brl(run.bridgeInterestTotal)}</dd></>}
+          <dt>Juros pagos no financiamento</dt><dd>{brl(run.housingInterestTotal)}</dd></>}
+      </dl>
+      <details className="detail"><summary>Como o cálculo funciona</summary>
+        <ul className="methods">
+          <li>O empréstimo cobre o que falta para a compra mais a reserva. O IOF é somado ao valor emprestado.</li>
+          <li>Toda sobra do mês vai para quitar o empréstimo. Depois que ele acaba, a sobra e a parcela liberada vão para o financiamento.</li>
+          <li>O FGTS abate primeiro a dívida mais cara.</li>
+          <li>Não entram TR, seguros e tarifas do banco. Use os valores da proposta para conferir a parcela.</li>
+        </ul>
+      </details>
+    </div>
+  </>
+}
+
+createRoot(document.getElementById('root')!).render(<App />)

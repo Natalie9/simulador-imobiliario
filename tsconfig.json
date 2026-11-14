@@ -4,5 +4,5 @@
     "moduleResolution": "bundler", "allowImportingTsExtensions": true, "jsx": "react-jsx",
     "strict": true, "noEmit": true, "skipLibCheck": true, "types": ["vite/client"]
   },
-  "include": ["src/**/*.tsx", "src/model.ts", "src/engine.ts", "src/storage.ts"]
+  "include": ["src/**/*.tsx", "src/model.ts", "src/engine.ts", "src/simple.ts"]
 }
